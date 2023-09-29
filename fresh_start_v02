@@ -1,0 +1,90 @@
+import pandas as pd
+
+# Sample data (replace this with your data)
+df1 = pd.read_csv("SE_Forecast_ALLE gebaute Anlage (MASTER).csv", encoding='latin1', dtype={"Installation Address - ZIP Code": str})
+df2 = pd.read_csv("SE_Forecast_New Opportunities Report.csv", encoding='latin1')
+
+# Replace comma with period and convert to float
+df2['Number Of Module Components'] = df2['Number Of Module Components'].str.replace(',', '.').astype(float)
+
+# Convert "Installation End Date" to datetime format and extract the date part only
+df1.dropna(subset=['Installation End Date'], inplace=True)
+df1.dropna(subset=['Installation Address - ZIP Code'], inplace=True)
+df1['Installation End Date'] = pd.to_datetime(df1['Installation End Date'], format="%d.%m.%Y, %H:%M")
+df1['zip_code_2_digits'] = df1['Installation Address - ZIP Code'].astype(str).str[:2]
+
+# Merge both dfs
+merged_df = df1.merge(df2, on='Salesforce Customer ID', how='left')
+
+# Filter the dataframe for entries with 'Installation End Date' before 01.01.2022
+filtered_df = merged_df[merged_df['Installation End Date'] < pd.to_datetime('01.01.2022')]
+
+# Calculate the cumulative installations
+cumulative_df = filtered_df.groupby('zip_code_2_digits').size().reset_index(name='cumulative_installations')
+
+# Calculate the required statistics
+stats_df = filtered_df.groupby('zip_code_2_digits').agg({
+    'Opportunity Battery Capacity kWh': 'sum',
+    'Number Of Module Components': 'sum',
+    'Number of Electrical Renovations': 'sum',
+    'Number of Wallboxes': 'sum',
+    'Number of Electricity Tariffs': 'sum',
+    'PV Yield (kWh/Year)': 'sum',
+    'House Type': lambda x: x.value_counts().to_dict()  # Count of each unique house type
+}).reset_index()
+
+# Filter out dates before 01.01.2022 for the weekly counts
+merged_df = merged_df[merged_df['Installation End Date'] >= pd.to_datetime('01.01.2022')]
+
+# Set 'Installation End Date' as the index for groupby with pd.Grouper to work
+merged_df.set_index('Installation End Date', inplace=True)
+
+# Group by week and zip-code for weekly installations
+weekly_counts = merged_df.groupby(['zip_code_2_digits', pd.Grouper(freq='W-MON')]).size().reset_index(name='weekly_installations')
+
+# Group by week and zip-code for weekly statistics
+weekly_stats = merged_df.groupby(['zip_code_2_digits', pd.Grouper(freq='W-MON')]).agg({
+    'Opportunity Battery Capacity kWh': 'sum',
+    'Number Of Module Components': 'sum',
+    'Number of Electrical Renovations': 'sum',
+    'Number of Wallboxes': 'sum',
+    'Number of Electricity Tariffs': 'sum',
+    'PV Yield (kWh/Year)': 'sum'
+}).reset_index()
+
+# Merge weekly counts with weekly statistics
+weekly_data = pd.merge(weekly_counts, weekly_stats, on=['zip_code_2_digits', 'Installation End Date'])
+
+# Merge with cumulative counts and statistics
+result = pd.merge(weekly_data, cumulative_df, on='zip_code_2_digits', how='left')
+
+# Initialize cumulative statistics columns
+columns_to_initialize = [
+    'cumulative_Opportunity Battery Capacity kWh',
+    'cumulative_Number Of Module Components',
+    'cumulative_Number of Electrical Renovations',
+    'cumulative_Number of Wallboxes',
+    'cumulative_Number of Electricity Tariffs',
+    'cumulative_PV Yield (kWh/Year)'
+]
+
+for col in columns_to_initialize:
+    base_col = col.split('cumulative_')[1]  # Extract the base column name
+    result[col] = result['zip_code_2_digits'].map(cumulative_df.set_index('zip_code_2_digits')[base_col].to_dict())
+    result[col].fillna(0, inplace=True)  # Fill NaN values with 0
+
+# Update cumulative counts and statistics
+result['cumulative_installations'] += result.groupby('zip_code_2_digits')['weekly_installations'].cumsum() - result['weekly_installations']
+
+# Similarly, update other cumulative statistics as needed
+result['cumulative_Opportunity Battery Capacity kWh'] += result.groupby('zip_code_2_digits')['Opportunity Battery Capacity kWh'].cumsum() - result['Opportunity Battery Capacity kWh']
+result['cumulative_Number Of Module Components'] += result.groupby('zip_code_2_digits')['Number Of Module Components'].cumsum() - result['Number Of Module Components']
+result['cumulative_Number of Electrical Renovations'] += result.groupby('zip_code_2_digits')['Number of Electrical Renovations'].cumsum() - result['Number of Electrical Renovations']
+result['cumulative_Number of Wallboxes'] += result.groupby('zip_code_2_digits')['Number of Wallboxes'].cumsum() - result['Number of Wallboxes']
+result['cumulative_Number of Electricity Tariffs'] += result.groupby('zip_code_2_digits')['Number of Electricity Tariffs'].cumsum() - result['Number of Electricity Tariffs']
+result['cumulative_PV Yield (kWh/Year)'] += result.groupby('zip_code_2_digits')['PV Yield (kWh/Year)'].cumsum() - result['PV Yield (kWh/Year)']
+
+# Merge the cumulative installations with the statistics
+result_df = cumulative_df.merge(stats_df, on='zip_code_2_digits')
+
+result_df
